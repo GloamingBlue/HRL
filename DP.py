@@ -1,4 +1,6 @@
 import copy
+import time
+import gymnasium as gym
 
 
 class CliffWalkingEnv:
@@ -181,3 +183,58 @@ if __name__ == '__main__':
     agent = ValueIteration(env, theta, gamma)
     agent.value_iteration()
     print_agent(agent, action_meaning, list(range(37, 47)), [47])
+    print()
+
+    # 使用OpenAI Gym中的FrozenLake-v0冰湖环境
+    env = gym.make("FrozenLake-v1", render_mode="human")
+    frozen_lake_env = env.unwrapped  # 解封装才能访问状态转移矩阵P
+    obs, info = env.reset()
+    # env.render()  # 环境渲染,通常是弹窗显示或打印出可视化的环境
+    holes = set()
+    ends = set()
+    for s in frozen_lake_env.P:
+        for a in frozen_lake_env.P[s]:
+            for s_ in frozen_lake_env.P[s][a]:
+                if s_[2] == 1.0:  # 获得奖励为1,代表是目标状态
+                    ends.add(s_[1])
+                if s_[3] == True:
+                    holes.add(s_[1])
+    holes -= ends  # 除去目标状态就剩冰洞
+    print(f'冰洞的索引{holes}')
+    print(f'目标的索引{ends}')
+    for a in frozen_lake_env.P[14]:  # 查看目标左边一格的状态转移信息
+        print(frozen_lake_env.P[14][a])
+    print()
+
+    action_meaning = ['<', 'v', '>', '^']  # 和Gym库针对冰湖环境事先规定好的动作顺序保持一致
+    theta = 1e-5
+    gamma = 0.9
+    # 策略迭代
+    agent = PolicyIteration(frozen_lake_env, theta, gamma)
+    agent.policy_iteration()
+    print_agent(agent, action_meaning, [5, 7, 11, 12], [15])
+    print()
+    # 价值迭代
+    agent = ValueIteration(frozen_lake_env, theta, gamma)
+    agent.value_iteration()
+    print_agent(agent, action_meaning, [5, 7, 11, 12], [15])
+    # 价值迭代的最优策略的可视化(根据状态转移概率进行rollout)
+    state, info = env.reset()
+    env.render()
+    time.sleep(0.5)
+    for step in range(1, 3 * frozen_lake_env.nrow * frozen_lake_env.ncol + 1):
+        action = max(range(len(agent.pi[state])), key=lambda i: agent.pi[state][i])
+        next_state, reward, terminated, truncated, info = env.step(action)
+        env.render()
+        time.sleep(0.1)
+        state = next_state
+        if terminated or truncated:
+            if reward == 1.0:
+                print(f"最优策略推理成功，到达状态 {state}，奖励为 {reward}，共使用 {step} 步")
+            else:
+                print(f"最优策略推理结束，到达状态 {state}，奖励为 {reward}")
+            break
+    else:
+        print("最优策略推理在步数上限内未到达终点。")
+
+    env.close()
