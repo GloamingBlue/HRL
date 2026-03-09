@@ -219,8 +219,7 @@ if __name__ == '__main__':
                     next_state, reward, done = env.step(action)
                     next_action = agent.take_action(next_state)
                     episode_return += reward  # 这里回报的计算不进行折扣因子衰减
-                    agent.update(state, action, reward, next_state, next_action,
-                                done)
+                    agent.update(state, action, reward, next_state, next_action, done)
                     state = next_state
                     action = next_action
                 return_list.append(episode_return)
