@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from PIL import Image
 from rl_utils import ReplayBuffer, train_off_policy_agent, moving_average, TransitionDict
 
 
@@ -39,7 +40,7 @@ class DQN:
         self.count = 0  # 记录更新次数
         self.device = device
         
-    def take_action(self, state: np.array) -> int:
+    def take_action(self, state: np.ndarray) -> int:
         if np.random.random() < self.epsilon:
             action = np.random.randint(self.action_dim)
         else:
@@ -83,6 +84,7 @@ class ConvolutionalQnet(torch.nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
+        x = torch.flatten(x, start_dim=1)
         x = F.relu(self.fc4(x))
         return self.head(x)
 
@@ -100,11 +102,11 @@ if __name__ == '__main__':
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     env_name = 'CartPole-v1'
-    env = gym.make(env_name)
     random.seed(42)
     np.random.seed(42)
-    # env.seed(42)
     torch.manual_seed(42)
+
+    env = gym.make(env_name)
     replay_buffer = ReplayBuffer(buffer_size)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
@@ -139,7 +141,69 @@ if __name__ == '__main__':
         state = next_state
         episode_return += reward
         done = terminated or truncated
-    print(f"Final greedy episode return: {episode_return}")
+    print(f"Final greedy episode return (state): {episode_return}")
+
+    pixel_lr = 1e-4
+    pixel_epsilon = 0.1
+    env = gym.make(env_name, render_mode='rgb_array')
+    env = gym.wrappers.AddRenderObservation(env, render_only=True)
+    env = gym.wrappers.TransformObservation(
+        env,
+        lambda obs: np.asarray(
+            Image.fromarray(obs).convert('L').resize((84, 84), Image.Resampling.BILINEAR),
+            dtype=np.uint8,
+        ),
+        gym.spaces.Box(low=0, high=255, shape=(84, 84), dtype=np.uint8),
+    )
+    env = gym.wrappers.FrameStackObservation(env, 4)
+    replay_buffer = ReplayBuffer(buffer_size)
+    action_dim = env.action_space.n
+    pixel_agent = DQN(1, hidden_dim, action_dim, pixel_lr, gamma, pixel_epsilon, target_update, device)
+    pixel_agent.q_net = ConvolutionalQnet(action_dim, in_channels=4).to(device)
+    pixel_agent.target_q_net = ConvolutionalQnet(action_dim, in_channels=4).to(device)
+    pixel_agent.target_q_net.load_state_dict(pixel_agent.q_net.state_dict())
+    pixel_agent.optimizer = torch.optim.AdamW(pixel_agent.q_net.parameters(), lr=pixel_lr)
+
+    return_list = train_off_policy_agent(
+        env, pixel_agent, num_episodes, replay_buffer, minimal_size, batch_size
+    )
+    episodes_list = list(range(len(return_list)))
+    plt.plot(episodes_list, return_list)
+    plt.xlabel('Episodes')
+    plt.ylabel('Returns')
+    plt.title('Pixel DQN on {}'.format(env_name))
+    plt.show()
+
+    mv_return = moving_average(return_list, 9)
+    plt.plot(episodes_list, mv_return)
+    plt.xlabel('Episodes')
+    plt.ylabel('Returns')
+    plt.title('Pixel DQN on {}'.format(env_name))
+    plt.show()
+
+    render_env = gym.make(env_name, render_mode='rgb_array')
+    render_env = gym.wrappers.AddRenderObservation(render_env, render_only=True)
+    render_env = gym.wrappers.TransformObservation(
+        render_env,
+        lambda obs: np.asarray(
+            Image.fromarray(obs).convert('L').resize((84, 84), Image.Resampling.BILINEAR),
+            dtype=np.uint8,
+        ),
+        gym.spaces.Box(low=0, high=255, shape=(84, 84), dtype=np.uint8),
+    )
+    render_env = gym.wrappers.FrameStackObservation(render_env, 4)
+    state, _ = render_env.reset()
+    done = False
+    episode_return = 0.0
+    while not done:
+        state_tensor = torch.tensor(np.asarray(state)[None, :], dtype=torch.float, device=device)
+        action = pixel_agent.q_net(state_tensor).argmax().item()
+        next_state, reward, terminated, truncated, _ = render_env.step(action)
+        time.sleep(0.02)
+        state = next_state
+        episode_return += reward
+        done = terminated or truncated
+    print(f"Final greedy episode return (pixel): {episode_return}")
 
     render_env.close()
     env.close()
