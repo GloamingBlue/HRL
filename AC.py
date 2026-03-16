@@ -55,7 +55,7 @@ class ActorCritic:
         actions = torch.tensor(transition_dict['actions'], device=self.device).view(-1, 1)
         rewards = torch.tensor(transition_dict['rewards'], dtype=torch.float, device=self.device).view(-1, 1)
         next_states = torch.tensor(np.asarray(transition_dict['next_states']), dtype=torch.float, device=self.device)
-        dones = torch.tensor(transition_dict['dones'], dtype=torch.float).view(-1, 1).to(self.device)
+        dones = torch.tensor(transition_dict['dones'], dtype=torch.float, device=self.device).view(-1, 1)
 
         td_target = rewards + self.gamma * self.critic(next_states) * (1 - dones)  # 时序差分目标
         td_delta = td_target - self.critic(states)  # 时序差分误差，实际上是优势函数，大于0代表动作比预期好，反之则比预期差

@@ -3,7 +3,7 @@ import gymnasium as gym
 import torch
 import torch.nn.functional as F
 import copy
-import matplotlib as plt
+import matplotlib.pyplot as plt
 from rl_utils import train_on_policy_agent, moving_average, TransitionDict
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
@@ -30,6 +30,18 @@ class ValueNet(torch.nn.Module):
         x = F.relu(self.fc1(x))
         return self.fc2(x)
     
+
+def compute_advantage(gamma: float, lmbda: float, td_delta: torch.Tensor) -> torch.Tensor:
+    """广义优势估计GAE"""
+    td_delta = td_delta.detach().numpy()
+    advantage_list = []
+    advantage = 0.0
+    for delta in td_delta[::-1]:
+        advantage = gamma * lmbda * advantage + delta
+        advantage_list.append(advantage)
+    advantage_list.reverse()
+    return torch.tensor(np.asarray(advantage_list), dtype=torch.float)
+
 
 class TRPO:
     def __init__(
@@ -75,5 +87,100 @@ class TRPO:
         rdotr = torch.dot(r, r)
         for i in range(10):
             Hp = self.hessian_matrix_vector_product(states, old_action_dists, p)
-            alpha = rdotr / torch.dat(p, Hp)
+            alpha = rdotr / torch.dot(p, Hp)
+            x += alpha * p
+            r -= alpha *Hp
+            new_rdotr = torch.dot(r, r)
+            if new_rdotr < 1e-10:
+                break
+            beta = new_rdotr / rdotr
+            p = r + beta * p
+            rdotr = new_rdotr
+        return x
             
+    def compute_surrogate_obj(self, states: np.ndarray, actions, advantage, old_log_probs, actor):
+        """计算策略目标(代理目标)"""
+        log_probs = torch.log(actor(states).gather(1, actions))
+        ratio = torch.exp(log_probs - old_log_probs)  # 重要性采样
+        return torch.mean(ratio * advantage)  # 重要性采样(策略项) * 优势项
+
+    def line_search(self, states, actions, advantage, old_log_probs, old_action_dists, max_vec):
+        """线性搜索"""
+        old_para = torch.nn.utils.convert_parameters.parameters_to_vector(self.actor.parameters())
+        old_obj = self.compute_surrogate_obj(states, actions, advantage, old_log_probs, self.actor)
+        for i in range(15):
+            coef = self.alpha**i
+            new_para = old_para + coef * max_vec
+            new_actor = copy.deepcopy(self.actor)
+            torch.nn.utils.convert_parameters.vector_to_parameters(new_para, new_actor.parameters())
+            new_action_dists = torch.distributions.Categorical(new_actor(states))
+            kl_div = torch.mean(torch.distributions.kl.kl_divergence(old_action_dists, new_action_dists))
+            new_obj = self.compute_surrogate_obj(states, actions, advantage, old_log_probs, new_actor)
+            if new_obj > old_obj and kl_div < self.kl_constraint:
+                return new_para
+        return old_para
+    
+    def policy_learn(self, states, actions, old_action_dists, old_log_probs, advantage):
+        surrogate_obj = self.compute_surrogate_obj(states, actions, advantage, old_log_probs, self.actor)
+        """更新策略函数"""
+        grads = torch.autograd.grad(surrogate_obj, self.actor.parameters())
+        obj_grad = torch.cat([grad.view(-1) for grad in grads]).detach()
+        descent_direction = self.conjugate_gradient(obj_grad, states, old_action_dists)
+        Hd = self.hessian_matrix_vector_product(states, old_action_dists, descent_direction)
+        max_coef = torch.sqrt(2 * self.kl_constraint / (torch.dot(descent_direction, Hd) + 1e-8))
+        new_para = self.line_search(states, actions, advantage, old_log_probs, old_action_dists, descent_direction * max_coef)
+        torch.nn.utils.convert_parameters.vector_to_parameters(new_para, self.actor.parameters())
+
+    def update(self, transition_dict: TransitionDict) -> None:
+        states = torch.tensor(np.asarray(transition_dict['states']), dtype=torch.float, device=self.device)
+        actions = torch.tensor(transition_dict['actions'], device=self.device).view(-1, 1)
+        rewards = torch.tensor(transition_dict['rewards'], dtype=torch.float, device=self.device).view(-1, 1)
+        next_states = torch.tensor(np.asarray(transition_dict['next_states']), dtype=torch.float, device=self.device)
+        dones = torch.tensor(transition_dict['dones'], dtype=torch.float, device=self.device).view(-1, 1)
+
+        td_target = rewards + self.gamma * self.critic(next_states) * (1 - dones)
+        td_delta = td_target - self.critic(states)
+        advantage = compute_advantage(self.gamma, self.lmbda, td_delta.cpu()).to(self.device)
+        old_log_probs = torch.log(self.actor(states).gather(1, actions)).detach()
+        old_action_dists = torch.distributions.Categorical(self.actor(states).detach())
+        critic_loss = torch.mean(F.mse_loss(self.critic(states), td_target.detach()))
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()  # 更新价值函数
+        self.policy_learn(states, actions, old_action_dists, old_log_probs, advantage)
+
+
+if __name__ == '__main__':
+    num_episodes = 1000
+    hidden_dim = 128
+    gamma = 0.98
+    lmbda = 0.95
+    critic_lr = 1e-2
+    kl_constraint = 0.0005
+    alpha = 0.5
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    env_name = 'CartPole-v1'
+    env = gym.make(env_name)
+    np.random.seed(0)
+    env.reset(seed=0)
+    env.action_space.seed(0)
+    torch.manual_seed(0)
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+    agent = TRPO(state_dim, hidden_dim, action_dim, lmbda, kl_constraint, alpha, critic_lr, gamma, device)
+    return_list = train_on_policy_agent(env, agent, num_episodes)
+
+    episodes_list = list(range(len(return_list)))
+    plt.plot(episodes_list, return_list)
+    plt.xlabel('Episodes')
+    plt.ylabel('Returns')
+    plt.title(f'TRPO on {env_name}')
+    plt.show()
+
+    mv_return = moving_average(return_list, 9)
+    plt.plot(episodes_list, mv_return)
+    plt.xlabel('Episodes')
+    plt.ylabel('Returns')
+    plt.title(f'TRPO on {env_name}')
+    plt.show()
