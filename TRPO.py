@@ -57,12 +57,23 @@ class TRPO:
     def hessian_matrix_vector_product(
             self, states: np.ndarray, old_action_dist: torch.distributions.Categorical, vector: torch.Tensor
     ) -> torch.Tensor:
-        # 计算黑塞矩阵和一个向量的乘积
-        new_action_dist = torch.distributions.Categorical(self.actor(states))
-        kl = torch.mean(torch.distributions.kl.kl_divergence(old_action_dist, new_action_dist))  # 计算平均kl距离
-        kl_grad = torch.autograd.grad(kl, self.actor.parameters(), create_graph=True)
+        """计算黑塞矩阵和一个向量的乘积"""
+        new_action_dist = torch.distributions.Categorical(self.actor(states))  # 计算新策略的分布
+        kl = torch.mean(torch.distributions.kl.kl_divergence(old_action_dist, new_action_dist))  # 计算旧策略对于新策略的平均kl距离
+        kl_grad = torch.autograd.grad(kl, self.actor.parameters(), create_graph=True)  # 计算kl距离相对于策略的一阶导数，保留计算图，使得一阶导可导，方便计算黑塞矩阵
         kl_grad_vector = torch.cat([grad.view(-1) for grad in kl_grad])
         kl_grad_vector_product = torch.dot(kl_grad_vector, vector)
-        grad2 = torch.autograd.grad(kl_grad_vector_product, self.actor.parameters())
+        grad2 = torch.autograd.grad(kl_grad_vector_product, self.actor.parameters())  # 计算一阶导和向量的乘积 相对于策略的二阶导，即黑塞矩阵乘以该向量
         grad2_vector = torch.cat([grad.view(-1) for grad in grad2])
         return grad2_vector
+
+    def conjugate_gradient(self, grad: torch.Tensor, states: np.ndarray, old_action_dists: torch.distributions.Categorical) -> torch.Tensor:
+        """使用共轭梯度法求解方程"""
+        x = torch.zeros_like(grad)
+        r = grad.clone()
+        p = grad.clone()
+        rdotr = torch.dot(r, r)
+        for i in range(10):
+            Hp = self.hessian_matrix_vector_product(states, old_action_dists, p)
+            alpha = rdotr / torch.dat(p, Hp)
+            
