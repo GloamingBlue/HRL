@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import copy
 import matplotlib.pyplot as plt
-from rl_utils import train_on_policy_agent, moving_average, TransitionDict
+from rl_utils import train_on_policy_agent, moving_average, TransitionDict, compute_advantage
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 
@@ -43,18 +43,6 @@ class ValueNet(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.relu(self.fc1(x))
         return self.fc2(x)
-    
-
-def compute_advantage(gamma: float, lmbda: float, td_delta: torch.Tensor) -> torch.Tensor:
-    """广义优势估计GAE"""
-    td_delta = td_delta.detach().numpy()
-    advantage_list: list[float] = []
-    advantage = 0.0
-    for delta in td_delta[::-1]:
-        advantage = gamma * lmbda * advantage + delta
-        advantage_list.append(advantage)
-    advantage_list.reverse()
-    return torch.tensor(np.asarray(advantage_list), dtype=torch.float)
 
 
 class TRPO:
@@ -399,4 +387,5 @@ def runTRPOContinuous() -> None:
 
 if __name__ == '__main__':
     runTRPO()
+    print()
     runTRPOContinuous()

@@ -52,6 +52,17 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
+def compute_advantage(gamma: float, lmbda: float, td_delta: torch.Tensor) -> torch.Tensor:
+    """广义优势估计GAE"""
+    td_delta = td_delta.detach().numpy()
+    advantage_list: list[float] = []
+    advantage = 0.0
+    for delta in td_delta[::-1]:
+        advantage = gamma * lmbda * advantage + delta
+        advantage_list.append(advantage)
+    advantage_list.reverse()
+    return torch.tensor(np.asarray(advantage_list), dtype=torch.float)
+
 def moving_average(a: Sequence[float], window_size: int) -> np.ndarray:
     cumulative_sum = np.cumsum(np.insert(a, 0, 0))
     middle = (cumulative_sum[window_size:] - cumulative_sum[:-window_size]) / window_size
@@ -135,4 +146,4 @@ def compute_advantage(gamma: float, lmbda: float, td_delta: torch.Tensor) -> tor
         advantage = gamma * lmbda * advantage + delta
         advantage_list.append(advantage)
     advantage_list.reverse()
-    return torch.tensor(advantage_list, dtype=torch.float)
+    return torch.tensor(np.asarray(advantage_list), dtype=torch.float)
